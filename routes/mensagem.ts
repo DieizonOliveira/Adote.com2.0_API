@@ -1,15 +1,21 @@
 import { PrismaClient } from '@prisma/client';
 import { Router } from "express";
-// import { verificaToken } from "../middewares/verificaToken"; // Mantido comentado para o teste
+import { verificaToken } from "../middewares/verificaToken";
+import { describe } from 'node:test';
+const log = (...msg: any) => console.log("\x1b[36m%s\x1b[0m", "[LOG]", ...msg);
+const warn = (...msg: any) => console.log("\x1b[33m%s\x1b[0m", "[WARN]", ...msg);
+const errorLog = (...msg: any) => console.log("\x1b[31m%s\x1b[0m", "[ERROR]", ...msg);
 
 const prisma = new PrismaClient();
 const router = Router();
 
-// ID Fixo para testes
-const USER_ID_TESTE = "32697fec-8100-47ef-9e6e-6aa77f7f6f08"; 
-
-router.get("/chats", async (req, res) => {
-  const userId = String(req.query.userId || USER_ID_TESTE);
+/**
+ * 📌 GET /mensagem/chats
+ * Lista os chats onde o usuário está participando
+ */
+router.get("/chats", verificaToken, async (req, res) => {
+  const userId = String(req.userLogadoId);
+  log("📥 GET /mensagem/chats — Usuário autenticado:", userId);
 
   try {
     const chats = await prisma.chat.findMany({
@@ -19,156 +25,64 @@ router.get("/chats", async (req, res) => {
           { participante2Id: userId },
         ]
       },
-      orderBy: { updatedAt : "asc" },
+      orderBy: { updatedAt: "asc" },
       include: {
         animal: true,
-        mensagens: {
-          orderBy: { dataEnvio : "asc" }
-        }
+        mensagens: { orderBy: { dataEnvio: "asc" } }
       }
     });
 
+    log("📤 Chats encontrados:", chats.length);
+
     res.status(200).json(chats);
   } catch (error) {
-    console.error(error);
+    errorLog("❌ Erro ao buscar chats:", error);
     res.status(400).json({ erro: "Erro ao buscar chats" });
   }
 });
 
-router.get("/chat/:chatId", async (req, res) => {
-    const { chatId } = req.params;
-    const userId = String(req.query.userId || USER_ID_TESTE); 
 
-    try {
-        const chat = await prisma.chat.findUnique({
-            where: { id: chatId },
-            include: {
-                animal: true,
-                mensagens: {
-                    orderBy: { dataEnvio: "asc" }
-                },
-            }
-        });
+/**
+ * 📌 GET /mensagem/:chatId
+ * Retorna todas as mensagens de um chat
+ */
+router.get("/:chatId", verificaToken, async (req, res) => {
+  const { chatId } = req.params;
+  log("📥 GET /mensagem/", chatId);
 
-        if (!chat) {
-            return res.status(404).json({ erro: "Chat não encontrado." });
-        }
-
-        if (chat.participante1Id !== userId && chat.participante2Id !== userId) {
-             console.log(`AVISO: Usuário ${userId} tentando acessar chat que não pertence a ele.`);
-        }
-
-        res.status(200).json(chat);
-    } catch (error) {
-        console.error("Erro ao buscar chat:", error);
-        res.status(500).json({ erro: "Erro ao buscar chat." });
-    }
-});
-
-router.get("/:chatId", async (req, res) => {
   try {
-    const { chatId } = req.params;
-
     const mensagens = await prisma.mensagem.findMany({
       where: { chatId },
-      orderBy: { dataEnvio : "asc" }
+      orderBy: { dataEnvio: "asc" }
     });
+
+    log(`📤 ${mensagens.length} mensagens retornadas do chat ${chatId}`);
 
     return res.status(200).json(mensagens);
   } catch (error) {
-    console.error("Erro ao buscar mensagens:", error);
+    errorLog("❌ Erro ao buscar mensagens:", error);
     return res.status(500).json({ erro: "Erro ao buscar mensagens." });
   }
 });
 
-router.post("/", async (req: any, res) => {
-  try {
-    const remetenteId = String(req.body.remetenteId || USER_ID_TESTE); 
 
-    const { animalId, destinatarioId, conteudo } = req.body;
-    
-    if (!conteudo || !animalId || !destinatarioId || !remetenteId) { 
-      return res
-        .status(400)
-        .json({ erro: "Informe remetenteId, animalId, destinatarioId e conteudo." });
-    }
-    
-    if (remetenteId === destinatarioId) {
-        return res.status(400).json({ erro: "Não é possível iniciar um chat consigo mesmo." });
-    }
-
-    let chat = await prisma.chat.findFirst ({
-      where: {
-        animalId,
-        OR : [
-          {participante1Id: remetenteId, participante2Id: destinatarioId},
-          {participante1Id: destinatarioId, participante2Id: remetenteId}
-        ]
-      }
-    })
-    
-    if (!chat) {
-      chat = await prisma.chat.create({
-        data: {
-          animalId,
-          participante1Id: remetenteId,
-          participante2Id: destinatarioId
-        }
-      })
-    }
-
-    const mensagem = await prisma.mensagem.create({
-      data: {
-        conteudo,
-        remetenteId, 
-        destinatarioId,
-        animalId,
-        chatId: chat.id
-      },
-    });
-
-    res.status(201).json({mensagem, chat});
-  } catch (error) {
-    console.error(error);
-    res.status(400).json({ erro: "Erro ao criar mensagem" });
-  }
-});
-
-router.patch("/chat/:chatId/lida", async (req: any, res) => {
-  const userId = String(req.body.userId || USER_ID_TESTE); 
+/**
+ * 📌 DELETE /mensagens/chat/:chatId
+ * Deleta um chat e todas as suas mensagens
+ */
+router.delete("/chat/:chatId", verificaToken, async (req: any, res) => {
   const { chatId } = req.params;
+  const userId = req.userLogadoId;
 
   try {
-    const result = await prisma.mensagem.updateMany({
-      where: {
-        chatId,
-        destinatarioId: userId, 
-        lida: false
-      },
-      data: { lida: true },
-    });
-
-    res.status(200).json({ mensagensAtualizadas: result.count });
-  } catch (error) {
-    console.error(error);
-    res.status(400).json({ erro: "Erro ao marcar como lida" });
-  }
-});
-
-// --- ROTA CORRIGIDA (SEM verificaToken) ---
-router.delete("/chat/:chatId", async (req: any, res) => {
-  const { chatId } = req.params;
-  // Correção: Usa o ID de teste ou query, pois o middleware está desligado
-  const userId = String(req.query.userId || USER_ID_TESTE);
-
-  try {
+    
     const chat = await prisma.chat.findUnique({
       where: { id: chatId },
     });
 
     if (!chat) return res.status(404).json({ erro: "Chat não encontrado." });
 
-    if (chat.participante1Id !== userId && chat.participante2Id !== userId) {
+    if (chat.participante1Id !== String(userId) && chat.participante2Id !== String(userId)) {
       return res.status(403).json({ erro: "Sem permissão para deletar este chat." });
     }
 
@@ -187,14 +101,116 @@ router.delete("/chat/:chatId", async (req: any, res) => {
     res.status(500).json({ erro: "Erro ao deletar chat." });
   }
 });
+router.post("/", verificaToken, async (req: any, res) => {
+  try {
+    const remetenteId = String(req.userLogadoId);
+    const { animalId, destinatarioId, conteudo } = req.body;
 
-router.get("/nao-lidas", async (req: any, res) => {
-  const userId = String(req.query.userId || USER_ID_TESTE);
+    log("📥 POST /mensagem");
+    log("🟦 Remetente:", remetenteId);
+    log("🟪 Destinatário:", destinatarioId);
+    log("🐾 Animal ID:", animalId);
+    log("💬 Conteúdo:", conteudo);
+
+    if (!conteudo || !animalId || !destinatarioId) {
+      warn("⚠ Dados faltando no body:", req.body);
+      return res
+        .status(400)
+        .json({ erro: "Informe chatId, destinatarioId e conteudo." });
+    }
+
+    log("🔎 Buscando chat existente...");
+
+    let chat = await prisma.chat.findFirst({
+      where: {
+        animalId,
+        OR: [
+          { participante1Id: remetenteId, participante2Id: destinatarioId },
+          { participante1Id: destinatarioId, participante2Id: remetenteId }
+        ]
+      }
+    });
+
+    if (!chat) {
+      log("🆕 Nenhum chat encontrado. Criando um novo...");
+
+      chat = await prisma.chat.create({
+        data: {
+          animalId,
+          participante1Id: remetenteId,
+          participante2Id: destinatarioId
+        }
+      });
+
+      log("📌 Chat criado:", chat.id);
+    } else {
+      log("📌 Chat já existente:", chat.id);
+    }
+
+    log("💬 Criando mensagem...");
+
+    const mensagem = await prisma.mensagem.create({
+      data: {
+        conteudo,
+        remetenteId,
+        destinatarioId,
+        animalId,
+        chatId: chat.id
+      },
+    });
+
+    log("📤 Mensagem criada com id:", mensagem.id);
+
+    res.status(201).json({ mensagem, chat });
+  } catch (error) {
+    errorLog("❌ Erro ao criar mensagem:", error);
+    res.status(400).json({ erro: "Erro ao criar mensagem" });
+  }
+});
+
+
+
+/**
+ * 📌 PATCH /mensagem/chat/:chatId/lida
+ * Marca TODAS as mensagens como lidas nesse chat
+ */
+router.patch("/chat/:chatId/lida", verificaToken, async (req: any, res) => {
+  const userId = String(req.userLogadoId);
+  const { chatId } = req.params;
+
+  log(`📥 PATCH /mensagem/chat/${chatId}/lida — ID do usuário:`, userId);
+
+  try {
+    const result = await prisma.mensagem.updateMany({
+      where: {
+        chatId,
+        destinatarioId: userId,
+        lida: false
+      },
+      data: { lida: true },
+    });
+
+    log("📤 Mensagens marcadas como lidas:", result.count);
+
+    res.status(200).json({ mensagensAtualizadas: result.count });
+  } catch (error) {
+    errorLog("❌ Erro ao marcar como lida:", error);
+    res.status(400).json({ erro: "Erro ao marcar como lida" });
+  }
+});
+
+
+/**
+ * 📌 GET /mensagem/nao-lidas
+ * Retorna número total de mensagens não lidas
+ */
+router.get("/nao-lidas", verificaToken, async (req: any, res) => {
+  const userId = String(req.userLogadoId);
 
   try {
     const count = await prisma.mensagem.count({
       where: {
-        destinatarioId: userId, 
+        destinatarioId: userId,
         lida: false
       }
     });
